@@ -102,9 +102,19 @@ as `each`:
 
     world->all([](Entity* ent) {
 		// do something with ent
-	});
+    });
 
 You may also use `all` in a range based for loop in a similar fashion to `each`.
+
+#### Multithreading
+
+Useful when acessing the world from multiple threads, there is a read-only variant of `each`, `readOnlyEach`, which only provides `const` entities and components:
+
+    world->readOnlyEach<Position>([&](const Entity* const ent, ConstComponentHandle<Position> position) {
+		// do a read-only operation
+    });
+
+Generally, only either one write operation or multiple read operations should take place at a time. However, it is possible to read and write to the world at the same time provided the writing operation does not delete or create entities. The set of entities and components being read and written to should be disjoint to avoid race conditions and undefined behaviour.
 
 ### Create the world
 
