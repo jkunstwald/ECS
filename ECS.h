@@ -139,6 +139,9 @@ namespace ECS
 		template<typename... Types>
 		class EntityComponentView;
 
+		template<typename... Types>
+		class ConstEntityComponentView;
+
 		class EntityView;
 
 		struct BaseComponentContainer
@@ -221,6 +224,67 @@ namespace ECS
 		};
 
 		template<typename... Types>
+		class ConstEntityComponentIterator
+		{
+		public:
+			ConstEntityComponentIterator(const World* const world, size_t index, bool bIsEnd, bool bIncludePendingDestroy);
+
+			size_t getIndex() const
+			{
+				return index;
+			}
+
+			bool isEnd() const;
+
+			bool includePendingDestroy() const
+			{
+				return bIncludePendingDestroy;
+			}
+
+			const World* const getWorld() const
+			{
+				return world;
+			}
+
+			const Entity* const get() const;
+
+			const Entity* const operator*() const
+			{
+				return get();
+			}
+
+			bool operator==(const ConstEntityComponentIterator<Types...>& other) const
+			{
+				if (world != other.world)
+					return false;
+
+				if (isEnd())
+					return other.isEnd();
+
+				return index == other.index;
+			}
+
+			bool operator!=(const ConstEntityComponentIterator<Types...>& other) const
+			{
+				if (world != other.world)
+					return true;
+
+				if (isEnd())
+					return !other.isEnd();
+
+				return index != other.index;
+			}
+
+			ConstEntityComponentIterator<Types...>& operator++();
+
+		private:
+			bool bIsEnd = false;
+			size_t index;
+			const class ECS::World* const world;
+			bool bIncludePendingDestroy;
+		};
+
+		template<typename... Types>
 		class EntityComponentView
 		{
 		public:
@@ -239,6 +303,27 @@ namespace ECS
 		private:
 			EntityComponentIterator<Types...> firstItr;
 			EntityComponentIterator<Types...> lastItr;
+		};
+
+		template<typename... Types>
+		class ConstEntityComponentView
+		{
+		public:
+			ConstEntityComponentView(const ConstEntityComponentIterator<Types...>& first, const ConstEntityComponentIterator<Types...>& last);
+
+			const ConstEntityComponentIterator<Types...>& begin() const
+			{
+				return firstItr;
+			}
+
+			const ConstEntityComponentIterator<Types...>& end() const
+			{
+				return lastItr;
+			}
+
+		private:
+			ConstEntityComponentIterator<Types...> firstItr;
+			ConstEntityComponentIterator<Types...> lastItr;
 		};
 	}
 
@@ -281,7 +366,47 @@ namespace ECS
 		}
 
 	private:
-		T* component;
+		T * component;
+	};
+
+	/**
+	* const version of ComponentHandle, used for World::readOnlyEach
+	*/
+	template<typename T>
+	class ConstComponentHandle
+	{
+	public:
+		ConstComponentHandle()
+			: component(nullptr)
+		{}
+
+		ConstComponentHandle(T* component)
+			: component(component)
+		{
+		}
+
+		const T* const operator->() const
+		{
+			return component;
+		}
+
+		operator bool() const
+		{
+			return isValid();
+		}
+
+		const T& get() const
+		{
+			return *component;
+		}
+
+		bool isValid() const
+		{
+			return component != nullptr;
+		}
+
+	private:
+		const T * const component;
 	};
 
 	/**
@@ -584,6 +709,15 @@ namespace ECS
 		void each(typename std::common_type<std::function<void(Entity*, ComponentHandle<Types>...)>>::type viewFunc, bool bIncludePendingDestroy = false);
 
 		/**
+		* Read-only version of World::each
+		*
+		* Multithreading: Only either multiple reads or one write should take place at the time
+		* Exception: Threaded reads can take place during a write if no entities are added or removed, and if the read and write sets of entities are disjoint
+		*/
+		template<typename... Types>
+		void readOnlyEach(typename std::common_type<std::function<void(const Entity* const, ConstComponentHandle<Types>...)>>::type viewFunc, bool bIncludePendingDestroy = false) const;
+
+		/**
 		* Run a function on all entities.
 		*/
 		void all(std::function<void(Entity*)> viewFunc, bool bIncludePendingDestroy = false);
@@ -600,6 +734,14 @@ namespace ECS
 			return Internal::EntityComponentView<Types...>(first, last);
 		}
 
+		template<typename... Types>
+		Internal::ConstEntityComponentView<Types...> readOnlyEach(bool bIncludePendingDestroy = false) const
+		{
+			Internal::ConstEntityComponentIterator<Types...> first(this, 0, false, bIncludePendingDestroy);
+			Internal::ConstEntityComponentIterator<Types...> last(this, getCount(), true, bIncludePendingDestroy);
+			return Internal::ConstEntityComponentView<Types...>(first, last);
+		}
+
 		Internal::EntityView all(bool bIncludePendingDestroy = false);
 
 		size_t getCount() const
@@ -608,6 +750,14 @@ namespace ECS
 		}
 
 		Entity* getByIndex(size_t idx)
+		{
+			if (idx >= getCount())
+				return nullptr;
+
+			return entities[idx];
+		}
+
+		const Entity* const getbyIndexConst(size_t idx) const
 		{
 			if (idx >= getCount())
 				return nullptr;
@@ -764,6 +914,12 @@ namespace ECS
 		*/
 		template<typename T>
 		ComponentHandle<T> get();
+
+		/**
+		* Get a read-only component from this entity.
+		*/
+		template<typename T>
+		ConstComponentHandle<T> getConst() const;
 
 		/**
 		* Call a function with components from this entity as arguments. This will return true if this entity has
@@ -1040,6 +1196,15 @@ namespace ECS
 		}
 	}
 
+	template<typename... Types>
+	void World::readOnlyEach(typename std::common_type<std::function<void(const Entity* const, ConstComponentHandle<Types>...)>>::type viewFunc, bool bIncludePendingDestroy) const
+	{
+		for (const Entity* const ent : readOnlyEach<Types...>(bIncludePendingDestroy))
+		{
+			viewFunc(ent, ent->template getConst<Types>()...);
+		}
+	}
+
 	template<typename T, typename... Args>
 	ComponentHandle<T> Entity::assign(Args&&... args)
 	{
@@ -1080,6 +1245,18 @@ namespace ECS
 		}
 	
 		return ComponentHandle<T>();
+	}
+
+	template<typename T>
+	ConstComponentHandle<T> Entity::getConst() const
+	{
+		auto found = components.find(getTypeIndex<T>());
+		if (found != components.end())
+		{
+			return ConstComponentHandle<T>(&reinterpret_cast<Internal::ComponentContainer<T>*>(found->second)->data);
+		}
+
+		return ConstComponentHandle<T>();
 	}
 
 	namespace Internal
@@ -1156,8 +1333,61 @@ namespace ECS
 			return *this;
 		}
 
+		/**
+		* const version of EntityComponentIterator
+		*
+		*/
+		template<typename... Types>
+		ConstEntityComponentIterator<Types...>::ConstEntityComponentIterator(const World* const world, size_t index, bool bIsEnd, bool bIncludePendingDestroy)
+			: bIsEnd(bIsEnd), index(index), world(world), bIncludePendingDestroy(bIncludePendingDestroy)
+		{
+			if (index >= world->getCount())
+				this->bIsEnd = true;
+		}
+
+		template<typename... Types>
+		bool ConstEntityComponentIterator<Types...>::isEnd() const
+		{
+			return bIsEnd || index >= world->getCount();
+		}
+
+		template<typename... Types>
+		const Entity* const ConstEntityComponentIterator<Types...>::get() const
+		{
+			if (isEnd())
+				return nullptr;
+
+			return world->getbyIndexConst(index);
+		}
+
+		template<typename... Types>
+		ConstEntityComponentIterator<Types...>& ConstEntityComponentIterator<Types...>::operator++()
+		{
+			++index;
+			while (index < world->getCount() && (get() == nullptr || !get()->template has<Types...>() || (get()->isPendingDestroy() && !bIncludePendingDestroy)))
+			{
+				++index;
+			}
+
+			if (index >= world->getCount())
+				bIsEnd = true;
+
+			return *this;
+		}
+
 		template<typename... Types>
 		EntityComponentView<Types...>::EntityComponentView(const EntityComponentIterator<Types...>& first, const EntityComponentIterator<Types...>& last)
+			: firstItr(first), lastItr(last)
+		{
+			if (firstItr.get() == nullptr || (firstItr.get()->isPendingDestroy() && !firstItr.includePendingDestroy())
+				|| !firstItr.get()->template has<Types...>())
+			{
+				++firstItr;
+			}
+		}
+
+		template<typename... Types>
+		ConstEntityComponentView<Types...>::ConstEntityComponentView(const ConstEntityComponentIterator<Types...>& first, const ConstEntityComponentIterator<Types...>& last)
 			: firstItr(first), lastItr(last)
 		{
 			if (firstItr.get() == nullptr || (firstItr.get()->isPendingDestroy() && !firstItr.includePendingDestroy())
